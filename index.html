@@ -121,11 +121,16 @@
         <button id="btn-editor-back" class="p-2 rounded-full hover:bg-gray-100 dark:hover:bg-gray-800 transition">
           <i data-lucide="chevron-left" class="w-6 h-6"></i>
         </button>
-        <span class="font-bold text-lg">Print Image</span>
-        <button id="btn-export-pdf" class="bg-purple-600 text-white px-4 py-2 rounded-xl font-bold shadow-md hover:bg-purple-700 active:scale-95 transition-all text-sm flex items-center gap-2 disabled:opacity-70">
-          <span id="export-text-idle" class="flex items-center gap-2"><i data-lucide="share" class="w-4 h-4"></i> Export / Print</span>
-          <span id="export-text-saving" class="hidden animate-pulse">Saving...</span>
-        </button>
+        <span class="font-bold text-lg truncate px-2">Print Image</span>
+        <div class="flex items-center gap-2">
+          <button id="btn-undo" disabled class="p-2 rounded-full hover:bg-gray-100 dark:hover:bg-gray-800 transition disabled:opacity-30 disabled:cursor-not-allowed text-gray-700 dark:text-gray-300" title="Undo">
+            <i data-lucide="undo" class="w-5 h-5"></i>
+          </button>
+          <button id="btn-export-pdf" class="bg-purple-600 text-white px-4 py-2 rounded-xl font-bold shadow-md hover:bg-purple-700 active:scale-95 transition-all text-sm flex items-center gap-2 disabled:opacity-70">
+            <span id="export-text-idle" class="flex items-center gap-2"><i data-lucide="share" class="w-4 h-4"></i> Export</span>
+            <span id="export-text-saving" class="hidden animate-pulse">Saving...</span>
+          </button>
+        </div>
       </div>
 
       <!-- Main Preview Area -->
@@ -262,6 +267,7 @@
       selectedSize: SIZES[0],
       isDropdownOpen: false,
       photos: [],
+      history: [],
       activePhotoId: null,
       isExporting: false
     };
@@ -282,6 +288,32 @@
       renderDropdown();
       setupEventListeners();
     }
+
+    // --- HISTORY / UNDO LOGIC ---
+    function saveHistory() {
+      state.history.push(JSON.parse(JSON.stringify(state.photos)));
+      if (state.history.length > 20) state.history.shift(); // keep max 20 states
+      updateUndoButton();
+    }
+
+    function updateUndoButton() {
+      const btn = document.getElementById('btn-undo');
+      if (btn) btn.disabled = state.history.length === 0;
+    }
+
+    function undo() {
+      if (state.history.length === 0) return;
+      state.photos = state.history.pop();
+      
+      // Clear active photo if it was deleted during undo
+      if (!state.photos.find(p => p.id === state.activePhotoId)) {
+        state.activePhotoId = null;
+      }
+      
+      renderWorkspace();
+      updateUndoButton();
+    }
+
 
     // --- RENDER LOGIC ---
 
@@ -535,11 +567,13 @@
       let dragStart = { x: 0, y: 0 };
       let initialPinchDist = null;
       let initialZoom = 1;
+      let actionHistorySaved = false; // Used to save state once per action
 
       const getPhoto = () => state.photos.find(p => p.id === photoId);
 
       // TOUCH
       div.addEventListener('touchstart', (e) => {
+        actionHistorySaved = false;
         setActivePhoto(photoId);
         if (e.touches.length === 2) {
           e.preventDefault();
@@ -560,6 +594,7 @@
 
         if (e.touches.length === 2 && initialPinchDist) {
           e.preventDefault();
+          if (!actionHistorySaved) { saveHistory(); actionHistorySaved = true; }
           const dist = Math.hypot(
             e.touches[0].clientX - e.touches[1].clientX,
             e.touches[0].clientY - e.touches[1].clientY
@@ -568,6 +603,7 @@
           const newZoom = Math.max(1, Math.min(3, initialZoom * scale));
           updateBatch(photo.batchId, () => ({ zoom: newZoom }));
         } else if (e.touches.length === 1 && isDragging) {
+          if (!actionHistorySaved) { saveHistory(); actionHistorySaved = true; }
           handleDragMove(e.touches[0].clientX, e.touches[0].clientY, photo);
         }
       }, { passive: false });
@@ -575,8 +611,6 @@
       div.addEventListener('touchend', () => {
         initialPinchDist = null;
         isDragging = false;
-        
-        // Remove transitions on end to allow smooth snapping if needed, but not strictly required here
         const photo = getPhoto();
         if(photo) updateBatch(photo.batchId, () => ({})); 
       });
@@ -584,13 +618,13 @@
       // MOUSE
       div.addEventListener('mousedown', (e) => {
         e.preventDefault();
+        actionHistorySaved = false;
         setActivePhoto(photoId);
         isDragging = true;
         dragStart = { x: e.clientX, y: e.clientY };
 
         const photo = getPhoto();
         
-        // Temporarily remove transform transition during drag for 0 latency
         state.photos.forEach(p => {
             if(p.batchId === photo.batchId) {
                 const img = document.getElementById(`img-${p.id}`);
@@ -598,7 +632,11 @@
             }
         });
 
-        const onMouseMove = (ev) => handleDragMove(ev.clientX, ev.clientY, getPhoto());
+        const onMouseMove = (ev) => {
+          if (!actionHistorySaved) { saveHistory(); actionHistorySaved = true; }
+          handleDragMove(ev.clientX, ev.clientY, getPhoto());
+        };
+
         const onMouseUp = () => {
           isDragging = false;
           document.removeEventListener('mousemove', onMouseMove);
@@ -649,6 +687,9 @@
     // --- EVENTS ---
     function setupEventListeners() {
       
+      // Undo button listener
+      document.getElementById('btn-undo').addEventListener('click', undo);
+
       // Home interactions
       document.getElementById('btn-home-edit').addEventListener('click', () => fileInput.click());
       document.getElementById('btn-home-print').addEventListener('click', () => openModal('print'));
@@ -662,12 +703,19 @@
             const imgSrc = event.target.result;
             const newNodes = createPhotoNodes(imgSrc, isAdding ? 1 : state.copies, state.selectedSize);
             
+            if (isAdding) {
+              saveHistory();
+            } else {
+              state.history = []; // reset history on brand new document upload
+            }
+
             state.photos = isAdding ? [...state.photos, ...newNodes] : newNodes;
             setActivePhoto(newNodes[0].id);
             
             if (!isAdding) switchView('editor');
             closeModal();
             renderWorkspace();
+            updateUndoButton();
           };
           reader.readAsDataURL(file);
         }
@@ -712,6 +760,7 @@
       const getActive = () => state.photos.find(p => p.id === state.activePhotoId);
       
       document.getElementById('btn-delete').addEventListener('click', () => {
+        saveHistory();
         state.photos = state.photos.filter(p => p.id !== state.activePhotoId);
         setActivePhoto(null);
         renderWorkspace();
@@ -719,12 +768,18 @@
 
       const moveInner = (dx, dy) => {
         const active = getActive();
-        if(active) updateBatch(active.batchId, p => ({ innerX: p.innerX + dx, innerY: p.innerY + dy }));
+        if(active) {
+          saveHistory();
+          updateBatch(active.batchId, p => ({ innerX: p.innerX + dx, innerY: p.innerY + dy }));
+        }
       };
       
       const zoomInner = (dZoom) => {
         const active = getActive();
-        if(active) updateBatch(active.batchId, p => ({ zoom: Math.max(1, Math.min(3, p.zoom + dZoom)) }));
+        if(active) {
+          saveHistory();
+          updateBatch(active.batchId, p => ({ zoom: Math.max(1, Math.min(3, p.zoom + dZoom)) }));
+        }
       };
 
       document.getElementById('btn-move-left').addEventListener('click', () => moveInner(-10, 0));
