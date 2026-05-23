@@ -1,0 +1,663 @@
+import React, { useState, useRef, useEffect, useCallback } from 'react';
+import { 
+  Edit3, Printer, Minus, Plus, ChevronDown, ChevronUp, 
+  PlayCircle, ArrowUp, ArrowDown, ArrowLeft, ArrowRight, 
+  UploadCloud, CheckCircle2, Image as ImageIcon, ChevronLeft,
+  ZoomIn, ZoomOut, Share, PlusCircle, Trash2
+} from 'lucide-react';
+
+// --- CONFIGURATION ---
+const A4_WIDTH_MM = 210;
+const A4_HEIGHT_MM = 297;
+
+const SIZES = [
+  { id: 'in', name: 'India Passport (35x45 mm)', w: 35, h: 45 },
+  { id: 'us', name: 'US Visa / Passport (51x51 mm)', w: 51, h: 51 },
+  { id: 'eu', name: 'Schengen Visa (35x45 mm)', w: 35, h: 45 },
+  { id: 'ca', name: 'Canada Visa (50x70 mm)', w: 50, h: 70 },
+  { id: 'uk', name: 'UK Passport (35x45 mm)', w: 35, h: 45 },
+  { id: 'li', name: 'LinkedIn/Profile Style', w: 51, h: 51 }, // Square equivalent
+];
+
+export default function App() {
+  const [view, setView] = useState('home'); 
+  const [showPrintModal, setShowPrintModal] = useState(false);
+  const [showAddModal, setShowAddModal] = useState(false);
+  
+  // Settings State
+  const [copies, setCopies] = useState(2);
+  const [selectedSize, setSelectedSize] = useState(SIZES[0]);
+  const [isSizeDropdownOpen, setIsSizeDropdownOpen] = useState(false);
+  
+  // Workspace State
+  const [photos, setPhotos] = useState([]);
+  const [activePhotoId, setActivePhotoId] = useState(null);
+  const [recentEdits, setRecentEdits] = useState([]);
+  
+  const fileInputRef = useRef(null);
+  const addFileInputRef = useRef(null);
+
+  // Load mocks on mount
+  useEffect(() => {
+    const mocks = Array(4).fill(null).map((_, i) => ({
+      id: i,
+      date: '9:41',
+      color: `hsl(${i * 60 + 200}, 70%, 85%)`
+    }));
+    setRecentEdits(mocks);
+  }, []);
+
+  const createPhotoNodes = (imgSrc, numCopies, size) => {
+    const newPhotos = [];
+    const cols = Math.floor(A4_WIDTH_MM / (size.w + 5)); // Estimate columns
+    const batchId = crypto.randomUUID();
+    
+    for (let i = 0; i < numCopies; i++) {
+      // Calculate a rough grid position for initial placement
+      const count = photos.length + i;
+      const row = Math.floor(count / cols);
+      const col = count % cols;
+      
+      const baseX = 5 + (col * (size.w + 5));
+      const baseY = 5 + (row * (size.h + 5));
+      
+      // Convert to percentages for responsive rendering
+      const pctX = (baseX / A4_WIDTH_MM) * 100;
+      const pctY = (baseY / A4_HEIGHT_MM) * 100;
+      
+      newPhotos.push({
+        id: crypto.randomUUID(),
+        batchId,
+        src: imgSrc,
+        sizeId: size.id,
+        w: size.w,
+        h: size.h,
+        x: Math.min(pctX, 100 - (size.w/A4_WIDTH_MM)*100), 
+        y: Math.min(pctY, 100 - (size.h/A4_HEIGHT_MM)*100),
+        innerX: 0,
+        innerY: 0,
+        zoom: 1
+      });
+    }
+    return newPhotos;
+  };
+
+  const handleFileUpload = (e, isAdding = false) => {
+    const file = e.target.files[0];
+    if (file) {
+      const reader = new FileReader();
+      reader.onload = (event) => {
+        const imgSrc = event.target.result;
+        const newNodes = createPhotoNodes(imgSrc, isAdding ? 1 : copies, selectedSize);
+        
+        if (isAdding) {
+          setPhotos([...photos, ...newNodes]);
+          setActivePhotoId(newNodes[0].id);
+          setShowAddModal(false);
+        } else {
+          setPhotos(newNodes);
+          setActivePhotoId(newNodes[0].id);
+          setView('editor');
+          setShowPrintModal(false);
+        }
+      };
+      reader.readAsDataURL(file);
+    }
+    e.target.value = ''; // Reset input
+  };
+
+  const openFilePicker = () => fileInputRef.current?.click();
+  const openAddFilePicker = () => addFileInputRef.current?.click();
+
+  const handlePrintContinue = () => {
+    if (photos.length === 0) {
+      openFilePicker();
+    } else {
+      setShowPrintModal(false);
+      setView('editor');
+    }
+  };
+
+  const updateBatch = (batchId, updateFn) => {
+    setPhotos(prev => prev.map(p => p.batchId === batchId ? { ...p, ...updateFn(p) } : p));
+  };
+
+  const deletePhoto = (id) => {
+    setPhotos(prev => prev.filter(p => p.id !== id));
+    setActivePhotoId(null);
+  };
+
+  const moveBatchFrames = (batchId, deltaX, deltaY) => {
+    setPhotos(prev => {
+      const batch = prev.filter(p => p.batchId === batchId);
+      
+      // Prevent the whole grid from pushing out of bounds
+      let canMoveX = true;
+      let canMoveY = true;
+      batch.forEach(p => {
+        const nx = p.x + deltaX;
+        const ny = p.y + deltaY;
+        const maxW = 100 - (p.w / A4_WIDTH_MM) * 100;
+        const maxH = 100 - (p.h / A4_HEIGHT_MM) * 100;
+        if (nx < 0 || nx > maxW) canMoveX = false;
+        if (ny < 0 || ny > maxH) canMoveY = false;
+      });
+
+      return prev.map(p => {
+        if (p.batchId === batchId) {
+          return {
+            ...p,
+            x: canMoveX ? p.x + deltaX : p.x,
+            y: canMoveY ? p.y + deltaY : p.y
+          };
+        }
+        return p;
+      });
+    });
+  };
+
+  return (
+    <div className="min-h-screen bg-gray-50 dark:bg-gray-950 font-sans text-gray-900 dark:text-gray-100 flex justify-center">
+      <div className="w-full max-w-md bg-white dark:bg-gray-950 shadow-2xl relative overflow-hidden flex flex-col h-[100dvh]">
+        
+        {/* Hidden File Inputs */}
+        <input type="file" ref={fileInputRef} accept="image/*" className="hidden" onChange={(e) => handleFileUpload(e, false)} />
+        <input type="file" ref={addFileInputRef} accept="image/*" className="hidden" onChange={(e) => handleFileUpload(e, true)} />
+
+        {/* --- VIEW ROUTER --- */}
+        {view === 'home' ? (
+          <HomeScreen 
+            openFilePicker={openFilePicker} 
+            setShowPrintModal={setShowPrintModal} 
+            recentEdits={recentEdits} 
+          />
+        ) : (
+          <EditorScreen 
+            photos={photos}
+            activePhotoId={activePhotoId}
+            setActivePhotoId={setActivePhotoId}
+            updateBatch={updateBatch}
+            moveBatchFrames={moveBatchFrames}
+            deletePhoto={deletePhoto}
+            setView={setView}
+            setShowAddModal={setShowAddModal}
+          />
+        )}
+
+        {/* --- SETTINGS MODAL (BOTTOM SHEET) --- */}
+        <Modal 
+          isOpen={showPrintModal || showAddModal} 
+          onClose={() => {
+            setShowPrintModal(false);
+            setShowAddModal(false);
+          }}
+        >
+          <div className="w-12 h-1.5 bg-gray-200 dark:bg-gray-700 rounded-full mx-auto mb-4"></div>
+          <h2 className="text-xl font-bold text-center mb-6">
+            {showAddModal ? 'Add More Photos' : 'Print Settings'}
+          </h2>
+
+          {/* Quantity Selector */}
+          {!showAddModal && (
+            <div className="flex items-center justify-between bg-gray-50 dark:bg-gray-800 p-4 rounded-2xl mb-4">
+              <span className="font-semibold text-gray-700 dark:text-gray-200">Number of copy</span>
+              <div className="flex items-center gap-4">
+                <button onClick={() => setCopies(Math.max(1, copies - 1))} className="w-10 h-10 flex items-center justify-center rounded-full bg-white dark:bg-gray-700 shadow-sm border border-gray-100 dark:border-gray-600 active:scale-95 transition-transform">
+                  <Minus className="w-5 h-5" />
+                </button>
+                <span className="w-6 text-center font-bold text-lg">{copies}</span>
+                <button onClick={() => setCopies(Math.min(20, copies + 1))} className="w-10 h-10 flex items-center justify-center rounded-full bg-white dark:bg-gray-700 shadow-sm border border-gray-100 dark:border-gray-600 active:scale-95 transition-transform">
+                  <Plus className="w-5 h-5" />
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* Size Dropdown */}
+          <div className="bg-gray-50 dark:bg-gray-800 rounded-2xl overflow-hidden transition-all duration-300 border border-gray-100 dark:border-gray-700">
+            <button 
+              onClick={() => setIsSizeDropdownOpen(!isSizeDropdownOpen)}
+              className="w-full flex items-center justify-between p-4 bg-transparent outline-none"
+            >
+              <div className="flex flex-col items-start">
+                <span className="font-semibold text-gray-700 dark:text-gray-200">Size</span>
+                {!isSizeDropdownOpen && (
+                  <span className="text-sm text-purple-600 dark:text-purple-400 font-medium mt-0.5">
+                    {selectedSize.name}
+                  </span>
+                )}
+              </div>
+              {isSizeDropdownOpen ? <ChevronUp className="w-5 h-5 text-gray-400" /> : <ChevronDown className="w-5 h-5 text-gray-400" />}
+            </button>
+
+            <div className={`overflow-hidden transition-all duration-300 ease-in-out ${isSizeDropdownOpen ? 'max-h-80' : 'max-h-0'}`}>
+              <div className="px-2 pb-2 flex flex-col gap-1 overflow-y-auto max-h-60 custom-scrollbar">
+                {SIZES.map((size) => (
+                  <button
+                    key={size.id}
+                    onClick={() => {
+                      setSelectedSize(size);
+                      setIsSizeDropdownOpen(false);
+                    }}
+                    className={`flex items-center justify-between w-full p-3 rounded-xl text-left transition-colors ${
+                      selectedSize.id === size.id 
+                        ? 'bg-purple-100 dark:bg-purple-900/30 text-purple-700 dark:text-purple-300' 
+                        : 'hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-600 dark:text-gray-300'
+                    }`}
+                  >
+                    <span className="font-medium text-sm">{size.name}</span>
+                    {selectedSize.id === size.id && <CheckCircle2 className="w-5 h-5 text-purple-600 dark:text-purple-400" />}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          {/* Action Buttons */}
+          <div className="flex gap-4 mt-6">
+            <button 
+              onClick={() => {
+                setShowPrintModal(false);
+                setShowAddModal(false);
+              }}
+              className="flex-1 py-4 rounded-2xl font-bold text-gray-600 dark:text-gray-300 bg-gray-100 dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors"
+            >
+              Cancel
+            </button>
+            <button 
+              onClick={showAddModal ? openAddFilePicker : handlePrintContinue}
+              className="flex-1 py-4 rounded-2xl font-bold text-white bg-purple-600 hover:bg-purple-700 active:scale-[0.98] transition-all shadow-lg shadow-purple-600/30"
+            >
+              Continue
+            </button>
+          </div>
+        </Modal>
+      </div>
+    </div>
+  );
+}
+
+// --- MODAL WRAPPER ---
+function Modal({ isOpen, onClose, children }) {
+  return (
+    <div className={`fixed inset-0 z-50 flex items-end justify-center transition-opacity duration-300 ${isOpen ? 'opacity-100 pointer-events-auto' : 'opacity-0 pointer-events-none'}`}>
+      <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={onClose}></div>
+      <div className={`relative w-full max-w-md bg-white dark:bg-gray-900 rounded-t-[2rem] p-6 shadow-2xl transition-transform duration-500 ease-out flex flex-col ${isOpen ? 'translate-y-0' : 'translate-y-full'}`}>
+        {children}
+      </div>
+    </div>
+  );
+}
+
+// --- HOME SCREEN ---
+function HomeScreen({ openFilePicker, setShowPrintModal, recentEdits }) {
+  return (
+    <div className="flex-1 overflow-y-auto print:hidden pb-10">
+      <div className="pt-12 px-6 pb-6">
+        <h1 className="text-4xl font-extrabold tracking-tight text-gray-900 dark:text-white">PortImage</h1>
+        <p className="text-lg text-gray-500 dark:text-gray-400 mt-1 font-medium">Instant. Easy. Free.</p>
+      </div>
+
+      <div className="px-6 flex gap-4">
+        <button onClick={openFilePicker} className="flex-1 aspect-square bg-gray-50 dark:bg-gray-800 rounded-[2rem] p-6 flex flex-col items-center justify-center gap-4 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors shadow-sm border border-gray-100 dark:border-gray-800">
+          <div className="w-16 h-16 rounded-full bg-white dark:bg-gray-700 flex items-center justify-center shadow-sm">
+            <Edit3 className="w-8 h-8 text-gray-800 dark:text-white" />
+          </div>
+          <span className="font-semibold text-lg">Edit</span>
+        </button>
+
+        <button onClick={() => setShowPrintModal(true)} className="flex-1 aspect-square bg-gray-50 dark:bg-gray-800 rounded-[2rem] p-6 flex flex-col items-center justify-center gap-4 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors shadow-sm border border-gray-100 dark:border-gray-800">
+          <div className="w-16 h-16 rounded-full bg-white dark:bg-gray-700 flex items-center justify-center shadow-sm">
+            <Printer className="w-8 h-8 text-gray-800 dark:text-white" />
+          </div>
+          <span className="font-semibold text-lg">Print</span>
+        </button>
+      </div>
+
+      <div className="mt-10">
+        <div className="px-6 flex items-center justify-between mb-4">
+          <h2 className="text-xl font-bold">Recent Edits</h2>
+          <span className="text-sm font-medium text-purple-600 dark:text-purple-400 bg-purple-50 dark:bg-purple-900/30 px-3 py-1 rounded-full">99</span>
+        </div>
+        <div className="flex overflow-x-auto gap-4 px-6 pb-4 custom-scrollbar snap-x">
+          {recentEdits.map((item) => (
+            <div key={item.id} className="snap-start flex-shrink-0 w-28 flex flex-col gap-2">
+              <div className="w-28 h-36 rounded-2xl shadow-sm border border-gray-100 dark:border-gray-800 flex items-center justify-center" style={{ backgroundColor: item.color }}>
+                <ImageIcon className="w-8 h-8 text-white/50" />
+              </div>
+              <span className="text-xs text-center text-gray-500 font-medium">{item.date}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* How it Works */}
+      <div className="mt-6 px-6">
+        <h2 className="text-xl font-bold mb-4">How it Works</h2>
+        <div className="relative w-full h-48 bg-gradient-to-br from-purple-100 to-indigo-50 dark:from-gray-800 dark:to-gray-800 rounded-3xl overflow-hidden group cursor-pointer border border-gray-100 dark:border-gray-700">
+          <div className="absolute inset-0 flex items-center justify-center">
+            <div className="w-16 h-16 bg-white/80 backdrop-blur-sm rounded-full flex items-center justify-center group-hover:scale-110 transition-transform shadow-lg text-purple-600">
+              <PlayCircle className="w-10 h-10" />
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  );
+}
+
+// --- EDITOR SCREEN & A4 WORKSPACE ---
+function EditorScreen({ photos, activePhotoId, setActivePhotoId, updateBatch, moveBatchFrames, deletePhoto, setView, setShowAddModal }) {
+  const [isExporting, setIsExporting] = useState(false);
+  const containerRef = useRef(null);
+
+  const activePhoto = photos.find(p => p.id === activePhotoId) || photos[0];
+
+  const handleExportPDF = async () => {
+    setIsExporting(true);
+    setActivePhotoId(null); // Deselect to remove active borders before print
+    
+    try {
+      // Dynamically load html2canvas and jsPDF for client-side processing
+      const html2canvas = (await import('https://esm.sh/html2canvas')).default;
+      const { jsPDF } = await import('https://esm.sh/jspdf');
+      
+      const printElement = document.getElementById('a4-workspace');
+      
+      const canvas = await html2canvas(printElement, { 
+        scale: 3, // High DPI
+        useCORS: true,
+        backgroundColor: '#ffffff'
+      });
+      
+      const imgData = canvas.toDataURL('image/jpeg', 1.0);
+      const pdf = new jsPDF({
+        orientation: 'portrait',
+        unit: 'mm',
+        format: 'a4'
+      });
+      
+      pdf.addImage(imgData, 'JPEG', 0, 0, 210, 297);
+      const pdfBlob = pdf.output('blob');
+      
+      // Attempt native share intent (Triggers Canon/System print dialogs on mobile)
+      if (navigator.canShare) {
+        const file = new File([pdfBlob], 'PortImage_Layout.pdf', { type: 'application/pdf' });
+        try {
+          await navigator.share({
+            title: 'Print Passport Photos',
+            text: 'Printing A4 Layout via PortImage',
+            files: [file]
+          });
+        } catch (err) {
+          console.log('Share canceled or failed', err);
+        }
+      } else {
+        // Fallback to browser print if no native share
+        window.print();
+      }
+    } catch (err) {
+      console.error('Export failed:', err);
+      window.print(); // ultimate fallback
+    } finally {
+      setIsExporting(false);
+    }
+  };
+
+  const moveActiveInner = (dx, dy) => {
+    if (!activePhoto) return;
+    updateBatch(activePhoto.batchId, p => ({
+      innerX: p.innerX + dx,
+      innerY: p.innerY + dy
+    }));
+  };
+
+  const zoomActiveInner = (delta) => {
+    if (!activePhoto) return;
+    updateBatch(activePhoto.batchId, p => ({
+      zoom: Math.max(1, Math.min(3, p.zoom + delta))
+    }));
+  };
+
+  return (
+    <div className="flex-1 flex flex-col h-full bg-gray-100 dark:bg-gray-950 overflow-hidden relative">
+      
+      {/* Top Navbar */}
+      <div className="print:hidden flex items-center justify-between p-4 bg-white dark:bg-gray-900 border-b border-gray-200 dark:border-gray-800 shadow-sm z-10 shrink-0">
+        <button onClick={() => setView('home')} className="p-2 rounded-full hover:bg-gray-100 dark:hover:bg-gray-800 transition">
+          <ChevronLeft className="w-6 h-6" />
+        </button>
+        <span className="font-bold text-lg">Print Image</span>
+        <button 
+          onClick={handleExportPDF}
+          disabled={isExporting}
+          className="bg-purple-600 text-white px-4 py-2 rounded-xl font-bold shadow-md hover:bg-purple-700 active:scale-95 transition-all text-sm flex items-center gap-2 disabled:opacity-70"
+        >
+          {isExporting ? <span className="animate-pulse">Saving...</span> : <><Share className="w-4 h-4" /> Export / Print</>}
+        </button>
+      </div>
+
+      {/* Main Preview Area */}
+      <div className="flex-1 overflow-y-auto py-6 px-4 flex flex-col items-center justify-start print:p-0 print:overflow-visible relative">
+        
+        {/* Floating Add Photo Button */}
+        <button 
+          onClick={() => setShowAddModal(true)}
+          className="print:hidden absolute top-8 right-6 z-20 bg-white dark:bg-gray-800 text-purple-600 dark:text-purple-400 p-3 rounded-full shadow-lg border border-purple-100 dark:border-purple-900 active:scale-95 transition-transform"
+          title="Add photo to empty space"
+        >
+          <PlusCircle className="w-6 h-6" />
+        </button>
+
+        {/* Fixed A4 Canvas Ratio Container */}
+        <div 
+          id="a4-workspace" 
+          ref={containerRef}
+          className="w-full max-w-[340px] aspect-[210/297] print:max-w-none print:w-[210mm] print:h-[297mm] bg-white shadow-md print:shadow-none relative mx-auto shrink-0 overflow-hidden"
+        >
+          {/* Print Safe Margin Indicator */}
+          <div className="absolute inset-[3%] border border-dashed border-gray-300 dark:border-gray-200 print:hidden pointer-events-none z-0 flex items-center justify-center">
+            {photos.length === 0 && <span className="text-gray-400 text-sm font-medium">Safe Print Area</span>}
+          </div>
+
+          {/* Draggable Placed Photos */}
+          {photos.map((photo) => (
+            <PlacedPhoto
+              key={photo.id}
+              photo={photo}
+              isActive={activePhotoId === photo.id}
+              onSelect={() => setActivePhotoId(photo.id)}
+              updateBatch={updateBatch}
+              moveBatchFrames={moveBatchFrames}
+              containerRef={containerRef}
+            />
+          ))}
+        </div>
+      </div>
+
+      {/* Bottom Controls for Adjusting Image INSIDE the selected frame */}
+      {activePhoto && (
+        <div className="print:hidden bg-white dark:bg-gray-900 border-t border-gray-200 dark:border-gray-800 p-6 rounded-t-3xl shadow-[0_-10px_40px_rgba(0,0,0,0.05)] z-10 pb-8 shrink-0">
+          <div className="flex items-center justify-between mb-4 px-2">
+            <p className="font-bold text-gray-700 dark:text-gray-300">Crop & Adjust</p>
+            <button 
+              onClick={() => deletePhoto(activePhoto.id)}
+              className="flex items-center gap-1.5 text-red-500 bg-red-50 dark:bg-red-900/20 px-3 py-1.5 rounded-xl text-sm font-semibold hover:bg-red-100 dark:hover:bg-red-900/40 active:scale-95 transition-all"
+            >
+              <Trash2 className="w-4 h-4" /> Delete
+            </button>
+          </div>
+          
+          <div className="flex items-center justify-between px-2">
+            {/* Zoom Controls */}
+            <div className="flex flex-col gap-3">
+              <button onClick={() => zoomActiveInner(0.1)} className="w-12 h-12 bg-purple-50 dark:bg-purple-900/20 border border-purple-100 dark:border-purple-800 rounded-2xl flex items-center justify-center shadow-sm active:scale-90 transition-transform">
+                <ZoomIn className="w-6 h-6 text-purple-600 dark:text-purple-400" />
+              </button>
+              <button onClick={() => zoomActiveInner(-0.1)} className="w-12 h-12 bg-purple-50 dark:bg-purple-900/20 border border-purple-100 dark:border-purple-800 rounded-2xl flex items-center justify-center shadow-sm active:scale-90 transition-transform">
+                <ZoomOut className="w-6 h-6 text-purple-600 dark:text-purple-400" />
+              </button>
+            </div>
+
+            {/* Move Controls */}
+            <div className="flex items-center justify-center gap-3">
+              <button onClick={() => moveActiveInner(-10, 0)} className="w-12 h-12 bg-gray-100 dark:bg-gray-800 rounded-2xl flex items-center justify-center shadow-sm active:scale-90 transition-transform">
+                <ArrowLeft className="w-6 h-6 text-gray-700 dark:text-gray-300" />
+              </button>
+              <div className="flex flex-col gap-3">
+                <button onClick={() => moveActiveInner(0, -10)} className="w-12 h-12 bg-gray-100 dark:bg-gray-800 rounded-2xl flex items-center justify-center shadow-sm active:scale-90 transition-transform">
+                  <ArrowUp className="w-6 h-6 text-gray-700 dark:text-gray-300" />
+                </button>
+                <button onClick={() => moveActiveInner(0, 10)} className="w-12 h-12 bg-gray-100 dark:bg-gray-800 rounded-2xl flex items-center justify-center shadow-sm active:scale-90 transition-transform">
+                  <ArrowDown className="w-6 h-6 text-gray-700 dark:text-gray-300" />
+                </button>
+              </div>
+              <button onClick={() => moveActiveInner(10, 0)} className="w-12 h-12 bg-gray-100 dark:bg-gray-800 rounded-2xl flex items-center justify-center shadow-sm active:scale-90 transition-transform">
+                <ArrowRight className="w-6 h-6 text-gray-700 dark:text-gray-300" />
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      
+      {/* Global Print Styles */}
+      <style dangerouslySetInnerHTML={{__html: `
+        @media print {
+          body { background: white; margin: 0; padding: 0; }
+          #root { display: block; }
+          @page { margin: 0cm; size: A4 portrait; }
+        }
+        .custom-scrollbar::-webkit-scrollbar { width: 4px; height: 4px; }
+        .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
+        .custom-scrollbar::-webkit-scrollbar-thumb { background: #e5e7eb; border-radius: 4px; }
+        .dark .custom-scrollbar::-webkit-scrollbar-thumb { background: #374151; }
+      `}} />
+    </div>
+  );
+}
+
+// --- PLACED PHOTO COMPONENT (DRAG & PINCH LOGIC) ---
+function PlacedPhoto({ photo, isActive, onSelect, updateBatch, moveBatchFrames, containerRef }) {
+  const nodeRef = useRef(null);
+  
+  // Drag State
+  const [isDragging, setIsDragging] = useState(false);
+  const dragStart = useRef({ x: 0, y: 0 });
+  
+  // Pinch State
+  const initialPinchDist = useRef(null);
+  const initialZoom = useRef(1);
+
+  // Conversion rates based on A4 proportions
+  const widthPct = (photo.w / A4_WIDTH_MM) * 100;
+  const heightPct = (photo.h / A4_HEIGHT_MM) * 100;
+
+  // Touch Events (Multi-touch Pinch + Single touch drag)
+  const handleTouchStart = (e) => {
+    onSelect();
+    if (e.touches.length === 2) {
+      e.preventDefault();
+      // Pinch started
+      const dist = Math.hypot(
+        e.touches[0].clientX - e.touches[1].clientX,
+        e.touches[0].clientY - e.touches[1].clientY
+      );
+      initialPinchDist.current = dist;
+      initialZoom.current = photo.zoom;
+    } else if (e.touches.length === 1) {
+      // Drag started
+      startDrag(e.touches[0].clientX, e.touches[0].clientY);
+    }
+  };
+
+  const handleTouchMove = (e) => {
+    if (e.touches.length === 2 && initialPinchDist.current) {
+      e.preventDefault();
+      const dist = Math.hypot(
+        e.touches[0].clientX - e.touches[1].clientX,
+        e.touches[0].clientY - e.touches[1].clientY
+      );
+      const scale = dist / initialPinchDist.current;
+      updateBatch(photo.batchId, p => ({
+        zoom: Math.max(1, Math.min(3, initialZoom.current * scale))
+      }));
+    } else if (e.touches.length === 1 && isDragging) {
+      moveDrag(e.touches[0].clientX, e.touches[0].clientY);
+    }
+  };
+
+  const handleTouchEnd = () => {
+    initialPinchDist.current = null;
+    setIsDragging(false);
+  };
+
+  // Mouse Events (Drag only)
+  const handleMouseDown = (e) => {
+    e.preventDefault(); // Prevent native image dragging
+    onSelect();
+    startDrag(e.clientX, e.clientY);
+    
+    const onMouseMove = (moveEvent) => {
+      moveDrag(moveEvent.clientX, moveEvent.clientY);
+    };
+    
+    const onMouseUp = () => {
+      setIsDragging(false);
+      document.removeEventListener('mousemove', onMouseMove);
+      document.removeEventListener('mouseup', onMouseUp);
+    };
+
+    document.addEventListener('mousemove', onMouseMove);
+    document.addEventListener('mouseup', onMouseUp);
+  };
+
+  const startDrag = (clientX, clientY) => {
+    setIsDragging(true);
+    dragStart.current = { x: clientX, y: clientY };
+  };
+
+  const moveDrag = (clientX, clientY) => {
+    if (!containerRef.current) return;
+    const rect = containerRef.current.getBoundingClientRect();
+    
+    // Calculate delta in percentages relative to the A4 container
+    const deltaX = ((clientX - dragStart.current.x) / rect.width) * 100;
+    const deltaY = ((clientY - dragStart.current.y) / rect.height) * 100;
+
+    dragStart.current = { x: clientX, y: clientY };
+
+    moveBatchFrames(photo.batchId, deltaX, deltaY);
+  };
+
+  return (
+    <div 
+      ref={nodeRef}
+      onTouchStart={handleTouchStart}
+      onTouchMove={handleTouchMove}
+      onTouchEnd={handleTouchEnd}
+      onMouseDown={handleMouseDown}
+      className={`absolute cursor-move touch-none overflow-hidden bg-gray-200 z-10 transition-[box-shadow,border] duration-150 ${
+        isActive ? 'ring-2 ring-purple-500 shadow-xl z-20 print:ring-0 print:shadow-none' : 'shadow-sm border border-gray-300 print:border-transparent'
+      }`}
+      style={{
+        left: `${photo.x}%`,
+        top: `${photo.y}%`,
+        width: `${widthPct}%`,
+        height: `${heightPct}%`,
+      }}
+    >
+      <img 
+        src={photo.src} 
+        alt="Passport segment" 
+        className="absolute max-w-none pointer-events-none object-cover min-w-full min-h-full"
+        style={{ 
+          transform: `translate(calc(-50% + ${photo.innerX}px), calc(-50% + ${photo.innerY}px)) scale(${photo.zoom})`,
+          left: '50%',
+          top: '50%',
+          transition: isDragging ? 'none' : 'transform 0.1s ease-out'
+        }}
+      />
+    </div>
+  );
+}
