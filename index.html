@@ -93,7 +93,7 @@
       <div class="mt-10">
         <div class="px-6 flex items-center justify-between mb-4">
           <h2 class="text-xl font-bold">Recent Edits</h2>
-          <span class="text-sm font-medium text-purple-600 dark:text-purple-400 bg-purple-50 dark:bg-purple-900/30 px-3 py-1 rounded-full">99</span>
+          <span id="recent-count-badge" class="hidden text-sm font-medium text-purple-600 dark:text-purple-400 bg-purple-50 dark:bg-purple-900/30 px-3 py-1 rounded-full">0</span>
         </div>
         <div id="recent-edits-container" class="flex overflow-x-auto gap-4 px-6 pb-4 custom-scrollbar snap-x">
           <!-- Populated by JS -->
@@ -268,6 +268,7 @@
       isDropdownOpen: false,
       photos: [],
       history: [],
+      recentEdits: JSON.parse(localStorage.getItem('portImageRecentEdits')) || [],
       activePhotoId: null,
       isExporting: false
     };
@@ -284,7 +285,7 @@
     // Setup function
     function init() {
       lucide.createIcons();
-      renderRecentEditsMocks();
+      renderRecentEdits();
       renderDropdown();
       setupEventListeners();
     }
@@ -424,23 +425,47 @@
       }
     }
 
-    function renderRecentEditsMocks() {
+    function renderRecentEdits() {
       const container = document.getElementById('recent-edits-container');
-      const mocks = Array(4).fill(null).map((_, i) => ({
-        id: i, date: '9:41', color: `hsl(${i * 60 + 200}, 70%, 85%)`
-      }));
+      const badge = document.getElementById('recent-count-badge');
+      container.innerHTML = '';
 
-      mocks.forEach(item => {
-        const div = document.createElement('div');
-        div.className = 'snap-start flex-shrink-0 w-28 flex flex-col gap-2';
-        div.innerHTML = `
-          <div class="w-28 h-36 rounded-2xl shadow-sm border border-gray-100 dark:border-gray-800 flex items-center justify-center" style="background-color: ${item.color}">
-            <i data-lucide="image" class="w-8 h-8 text-white/50"></i>
+      if (state.recentEdits.length === 0) {
+        badge.classList.add('hidden');
+        container.innerHTML = `
+          <div class="w-full flex flex-col items-center justify-center py-6 text-gray-400 dark:text-gray-500">
+            <i data-lucide="folder-open" class="w-10 h-10 mb-2 opacity-40"></i>
+            <p class="text-sm font-medium">No recent file found</p>
           </div>
-          <span class="text-xs text-center text-gray-500 font-medium">${item.date}</span>
         `;
-        container.appendChild(div);
-      });
+      } else {
+        badge.classList.remove('hidden');
+        badge.innerText = state.recentEdits.length;
+
+        state.recentEdits.forEach(item => {
+          const div = document.createElement('div');
+          div.className = 'snap-start flex-shrink-0 w-28 flex flex-col gap-2 cursor-pointer transition-transform active:scale-95';
+          div.innerHTML = `
+            <div class="w-28 h-36 rounded-2xl shadow-sm border border-gray-100 dark:border-gray-800 flex items-center justify-center overflow-hidden bg-white dark:bg-gray-800 relative">
+              <img src="${item.src}" class="absolute inset-0 w-full h-full object-cover opacity-90" />
+            </div>
+            <span class="text-xs text-center text-gray-500 font-medium">${item.date}</span>
+          `;
+          
+          // Tap recent file to reload it
+          div.onclick = () => {
+            state.photos = createPhotoNodes(item.src, state.copies, state.selectedSize);
+            state.history = [];
+            setActivePhoto(state.photos[0].id);
+            switchView('editor');
+            renderWorkspace();
+            updateUndoButton();
+          };
+          
+          container.appendChild(div);
+        });
+      }
+      lucide.createIcons();
     }
 
     // --- WORKSPACE & EDITOR LOGIC ---
@@ -502,9 +527,11 @@
         img.id = `img-${photo.id}`;
         img.src = photo.src;
         img.alt = "Passport segment";
-        img.className = "absolute max-w-none pointer-events-none object-cover min-w-full min-h-full";
-        img.style.left = '50%';
-        img.style.top = '50%';
+        
+        // Fit perfectly via w-full h-full object-cover to match the container precisely
+        img.className = "absolute w-full h-full pointer-events-none object-cover";
+        img.style.left = '0';
+        img.style.top = '0';
         
         div.appendChild(img);
         a4Workspace.appendChild(div);
@@ -532,7 +559,10 @@
       
       div.style.left = `${p.x}%`;
       div.style.top = `${p.y}%`;
-      img.style.transform = `translate(calc(-50% + ${p.innerX}px), calc(-50% + ${p.innerY}px)) scale(${p.zoom})`;
+      
+      // Map adjustments through objectPosition to pan perfectly within the bounds
+      img.style.objectPosition = `calc(50% + ${p.innerX}px) calc(50% + ${p.innerY}px)`;
+      img.style.transform = `scale(${p.zoom})`;
     }
 
     function updateControlsVisibility() {
@@ -645,7 +675,8 @@
           state.photos.forEach(p => {
               if(p.batchId === photo.batchId) {
                   const img = document.getElementById(`img-${p.id}`);
-                  if(img) img.style.transition = 'transform 0.1s ease-out';
+                  // Restore both transform and object-position transitions natively
+                  if(img) img.style.transition = 'transform 0.1s ease-out, object-position 0.1s ease-out';
               }
           });
         };
@@ -818,6 +849,23 @@
           const pdf = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
           pdf.addImage(imgData, 'JPEG', 0, 0, 210, 297);
           const pdfBlob = pdf.output('blob');
+          
+          // Save to recent edits after successful generation
+          if (state.photos.length > 0) {
+            const firstPhotoSrc = state.photos[0].src;
+            const now = new Date();
+            const timeStr = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+            
+            // Remove exact duplicate image sources and push to front
+            state.recentEdits = state.recentEdits.filter(r => r.src !== firstPhotoSrc);
+            state.recentEdits.unshift({ id: crypto.randomUUID(), src: firstPhotoSrc, date: timeStr });
+            
+            // Keep maximum of 10 recent edits
+            if (state.recentEdits.length > 10) state.recentEdits.pop();
+            
+            localStorage.setItem('portImageRecentEdits', JSON.stringify(state.recentEdits));
+            renderRecentEdits();
+          }
           
           if (navigator.canShare) {
             const file = new File([pdfBlob], 'PortImage_Layout.pdf', { type: 'application/pdf' });
